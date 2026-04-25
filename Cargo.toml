@@ -1,0 +1,9 @@
+[package]
+name = "LKH-Work"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+calamine = "0.34.0"
+egui = "0.34.1"
+polars = "0.53.0"
