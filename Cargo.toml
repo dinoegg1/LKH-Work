@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 calamine = "0.34.0"
+dotenv = "0.15.0"
 eframe = "0.34.1"
 egui = "0.34.1"
 polars = {version ="0.53.0", features = ["lazy","csv"]}
