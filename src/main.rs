@@ -234,6 +234,7 @@ fn run_tsp_pipeline(csv_path: &Path) -> Result<(), String> {
     let par_path = PathBuf::from("lkh_config.par");
     let mut par_file = File::create(&par_path).map_err(|e| e.to_string())?;
     writeln!(par_file, "PROBLEM_FILE = {}", tsp_output.display()).map_err(|e| e.to_string())?;
+    writeln!(par_file, "RUNS = 50").map_err(|e| e.to_string())?;
 
     let output = std::process::Command::new(&temp_lkh)
         .arg(&par_path)
