@@ -403,7 +403,7 @@ fn run_tsp_pipeline(csv_path: &Path) -> Result<(Vec<[f64; 2]>, Vec<[f64; 2]>), S
             );
         } else {
             return Err(format!(
-                "LKH failed: {}",
+                "LKH succeeded: {}",
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
