@@ -9,4 +9,6 @@ dotenv = "0.15.0"
 dotenvy = "0.15.7"
 eframe = "0.34.1"
 egui = "0.34.1"
+egui_plot = "0.35.0"
 polars = {version ="0.53.0", features = ["lazy","csv","strings"]}
+walkers = "0.53.0"

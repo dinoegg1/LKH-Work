@@ -5,11 +5,10 @@ const LKH_BINARY: &[u8] = include_bytes!("../resources/LKH");
 const LKH_BINARY: &[u8] = include_bytes!("../resources/LKH.exe");
 
 use eframe::egui;
-use egui::Ui;
 use polars::prelude::*;
 use std::env;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /* We're just going to focus on the csv -> TSP pipeline, no XLSX for now */
@@ -108,6 +107,76 @@ pub fn df_to_tsp(
     Ok(())
 }
 
+fn parse_lkh_output(
+    output_file: &Path,
+    all_coords: &Vec<[f64; 2]>,
+) -> Result<Vec<[f64; 2]>, String> {
+    let file = File::open(output_file).map_err(|e| format!("Failed to open LKH output: {}", e))?;
+    let reader = BufReader::new(file);
+    let mut route = Vec::new();
+    let mut in_tour_section = false;
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Failed to read line: {}", e))?;
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("TOUR_SECTION") {
+            in_tour_section = true;
+            continue;
+        }
+
+        if trimmed == "-1" || trimmed == "EOF" {
+            break;
+        }
+
+        if in_tour_section && !trimmed.is_empty() {
+            if let Ok(node_id) = trimmed.parse::<usize>() {
+                if let Some(coord) = all_coords.get(node_id - 1) {
+                    route.push(*coord);
+                }
+            }
+        }
+    }
+
+    if route.is_empty() {
+        return Err("No tour found in LKH output".to_string());
+    }
+
+    Ok(route)
+}
+
+fn extract_coordinates_from_tsp(tsp_file: &Path) -> Result<Vec<[f64; 2]>, String> {
+    let file = File::open(tsp_file).map_err(|e| format!("Failed to open TSP file: {}", e))?;
+    let reader = BufReader::new(file);
+    let mut coordinates: Vec<[f64; 2]> = Vec::new();
+    let mut in_coord_section = false;
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Failed to read line: {}", e))?;
+        let trimmed = line.trim();
+
+        if trimmed == "NODE_COORD_SECTION" {
+            in_coord_section = true;
+            continue;
+        }
+
+        if trimmed == "EOF" {
+            break;
+        }
+
+        if in_coord_section && !trimmed.is_empty() {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                if let (Ok(lat), Ok(lon)) = (parts[1].parse::<f64>(), parts[2].parse::<f64>()) {
+                    coordinates.push([lon, lat]);
+                }
+            }
+        }
+    }
+
+    Ok(coordinates)
+}
+
 fn main() -> eframe::Result<()> {
     dotenvy::dotenv().ok();
 
@@ -123,6 +192,9 @@ struct MyApp {
     file_path: Option<PathBuf>,
     status_message: String,
     is_processing: bool,
+    route_coordinates: Vec<[f64; 2]>,
+    all_coordinates: Vec<[f64; 2]>,
+    show_route: bool,
 }
 
 impl Default for MyApp {
@@ -131,6 +203,9 @@ impl Default for MyApp {
             file_path: None,
             status_message: String::new(),
             is_processing: false,
+            route_coordinates: Vec::new(),
+            all_coordinates: Vec::new(),
+            show_route: false,
         }
     }
 }
@@ -154,7 +229,7 @@ impl eframe::App for MyApp {
                 .label("Drag and drop a CSV file here")
                 .on_hover_text("Drop a CSV file to load it");
 
-            if ctx.input(|i| i.raw.hovered_files.len()) > 0 {
+            if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
                 ctx.input(|i| {
                     for file in &i.raw.hovered_files {
                         if let Some(path) = &file.path {
@@ -172,11 +247,26 @@ impl eframe::App for MyApp {
                     let file_path = file_path.clone();
 
                     std::thread::spawn(move || match run_tsp_pipeline(&file_path) {
-                        Ok(_) => {
+                        Ok((route_coords, all_coords)) => {
                             println!("Pipeline completed successfully");
+                            // Store results in a temporary location that will be picked up on next UI update
+                            std::fs::write(
+                                "pipeline_result.json",
+                                format!(
+                                    r#"{{\"status\":\"success\",\"route_count\":{},\"coords_count\":{}}}"#,
+                                    route_coords.len(),
+                                    all_coords.len()
+                                ),
+                            )
+                            .ok();
                         }
                         Err(e) => {
                             eprintln!("Pipeline error: {}", e);
+                            std::fs::write(
+                                "pipeline_result.json",
+                                format!(r#"{{\"status\":\"error\",\"message\":\"{}\"}}"#, e),
+                            )
+                            .ok();
                         }
                     });
 
@@ -188,32 +278,85 @@ impl eframe::App for MyApp {
 
             ui.separator();
             ui.label(&self.status_message);
+
+            if self.is_processing {
+                if let Ok(result_str) = std::fs::read_to_string("pipeline_result.json") {
+                    self.is_processing = false;
+                    if result_str.contains("\"status\":\"success\"") {
+                        self.status_message = "Pipeline completed successfully".to_string();
+                        let tsp_path = std::path::PathBuf::from("output.tsp");
+                        let tour_path = std::path::PathBuf::from("output.tour");
+                        if let Ok(all_coords) = extract_coordinates_from_tsp(&tsp_path) {
+                            if let Ok(route) = parse_lkh_output(&tour_path, &all_coords) {
+                                self.all_coordinates = all_coords;
+                                self.route_coordinates = route;
+                                self.show_route = true;
+                            }
+                        }
+                    } else {
+                        self.status_message = "Pipeline failed".to_string();
+                    }
+                    let _ = std::fs::remove_file("pipeline_result.json");
+                } else {
+                    ctx.request_repaint();
+                }
+            }
+
+            if self.show_route && !self.route_coordinates.is_empty() {
+                ui.separator();
+                ui.heading("Route computed");
+                ui.label(format!(
+                    "Total points: {} | Route points: {}",
+                    self.all_coordinates.len(),
+                    self.route_coordinates.len()
+                ));
+            }
         });
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // This method is required by the eframe::App trait
-        // The main UI logic is implemented in the update method above
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 }
 
-fn run_tsp_pipeline(csv_path: &Path) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineStage {
+    Idle,
+    IngestCsv,
+    LoadGeocodes,
+    GeocodeJoin,
+    WriteTsp,
+    RunLkh,
+    ParseTour,
+    Done,
+}
+
+fn run_tsp_pipeline(csv_path: &Path) -> Result<(Vec<[f64; 2]>, Vec<[f64; 2]>), String> {
     // 1. Ingest CSV
+    println!("[pipeline] stage={:?}", PipelineStage::IngestCsv);
     let lazy_frame = ingest_csv(csv_path).map_err(|e| format!("Failed to ingest CSV: {}", e))?;
 
     // 2. Load zipcode data
+    println!("[pipeline] stage={:?}", PipelineStage::LoadGeocodes);
     let geo_df = load_zipcode_data().map_err(|e| format!("Failed to load geocode data: {}", e))?;
 
     // 3. Perform geocode join
+    println!("[pipeline] stage={:?}", PipelineStage::GeocodeJoin);
     let geocoded = perform_dynamic_geocode_join(lazy_frame, geo_df, "Zipcode")
         .map_err(|e| format!("Failed to geocode: {}", e))?;
 
     // 4. Convert to TSP format
+    println!("[pipeline] stage={:?}", PipelineStage::WriteTsp);
     let tsp_output = PathBuf::from("output.tsp");
     df_to_tsp(Ok(geocoded.lazy()), &tsp_output, "TSP.tsp")?;
 
+    // Extract coordinates from TSP file for visualization
+    let all_coordinates = extract_coordinates_from_tsp(&tsp_output)?;
+
     // 5. Write LKH binary to temp location
+    #[cfg(target_os = "linux")]
     let temp_lkh = PathBuf::from("/tmp/LKH");
+    #[cfg(target_os = "windows")]
+    let temp_lkh = PathBuf::from("LKH.exe");
+
     {
         let mut lkh_file =
             File::create(&temp_lkh).map_err(|e| format!("Failed to write LKH binary: {}", e))?;
@@ -231,24 +374,42 @@ fn run_tsp_pipeline(csv_path: &Path) -> Result<(), String> {
     }
 
     // 6. Run LKH
+    println!("[pipeline] stage={:?}", PipelineStage::RunLkh);
     let par_path = PathBuf::from("lkh_config.par");
+    let tour_output = PathBuf::from("output.tour");
     let mut par_file = File::create(&par_path).map_err(|e| e.to_string())?;
     writeln!(par_file, "PROBLEM_FILE = {}", tsp_output.display()).map_err(|e| e.to_string())?;
-    writeln!(par_file, "RUNS = 50").map_err(|e| e.to_string())?;
+    writeln!(par_file, "RUNS = 1").map_err(|e| e.to_string())?;
+    writeln!(par_file, "TOUR_FILE = {}", tour_output.display()).map_err(|e| e.to_string())?;
 
     let output = std::process::Command::new(&temp_lkh)
         .arg(&par_path)
         .output()
         .map_err(|e| format!("Failed to run LKH: {}", e))?;
 
+    // Note: LKH may write a valid TOUR_FILE even when it exits with a non-zero status.
+    // In that case, prefer validating existence/non-empty TOUR_FILE over process status.
     if !output.status.success() {
-        return Err(format!(
-            "LKH failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        if tour_output.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+            eprintln!(
+                "[pipeline] LKH exited with status {:?}, but '{}' was produced (non-empty). Continuing.",
+                output.status.code(),
+                tour_output.display()
+            );
+        } else {
+            return Err(format!(
+                "LKH failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
     }
 
     println!("LKH output: {}", String::from_utf8_lossy(&output.stdout));
 
-    Ok(())
+    // 7. Parse LKH output to get route
+    println!("[pipeline] stage={:?}", PipelineStage::ParseTour);
+    let route_coordinates = parse_lkh_output(&tour_output, &all_coordinates)?;
+
+    println!("[pipeline] stage={:?}", PipelineStage::Done);
+    Ok((route_coordinates, all_coordinates))
 }
