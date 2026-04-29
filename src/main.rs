@@ -1,6 +1,9 @@
 #[cfg(target_os = "linux")]
 const LKH_BINARY: &[u8] = include_bytes!("../resources/LKH");
 
+#[cfg(target_os = "macos")]
+const LKH_BINARY: &[u8] = include_bytes!("../resources/LKH_mac");
+
 #[cfg(target_os = "windows")]
 const LKH_BINARY: &[u8] = include_bytes!("../resources/LKH.exe");
 
@@ -8,6 +11,7 @@ use eframe::egui;
 use polars::prelude::*;
 use std::env;
 use std::fs::File;
+use std::io::Cursor;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -42,10 +46,9 @@ pub fn perform_dynamic_geocode_join(
 }
 
 fn load_zipcode_data() -> PolarsResult<DataFrame> {
-    let geocode_file = env::var("geo_code").expect("Please check the encoded env variables");
-    let file_path = PathBuf::from(geocode_file);
-    let file = File::open(&file_path)?;
-    let df = CsvReader::new(file).finish();
+    let csv_bytes = include_bytes!("../resources/Geocoding.csv");
+    let cursor = Cursor::new(csv_bytes);
+    let df = CsvReader::new(cursor).finish();
     df
 }
 
@@ -356,6 +359,8 @@ fn run_tsp_pipeline(csv_path: &Path) -> Result<(Vec<[f64; 2]>, Vec<[f64; 2]>), S
     let temp_lkh = PathBuf::from("/tmp/LKH");
     #[cfg(target_os = "windows")]
     let temp_lkh = PathBuf::from("LKH.exe");
+    #[cfg(target_os = "macos")]
+    let temp_lkh = PathBuf::from("/tmp/LKH_mac");
 
     {
         let mut lkh_file =
