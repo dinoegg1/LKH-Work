@@ -371,7 +371,7 @@ fn run_tsp_pipeline(csv_path: &Path) -> Result<(Vec<[f64; 2]>, Vec<[f64; 2]>), S
         // lkh_file is dropped here at the end of the scope
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&temp_lkh, std::fs::Permissions::from_mode(0o755))
